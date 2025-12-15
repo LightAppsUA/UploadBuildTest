@@ -1,0 +1,9 @@
+app_identifier("")
+
+data[:version] = "1.0"
+data[:build_number] = ""
+
+data[:scheme] = ""
+data[:target] = ""
+
+data[:asc_issuer_id] = ""

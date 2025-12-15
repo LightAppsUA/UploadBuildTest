@@ -1,0 +1,118 @@
+name: Generate cert
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_name:
+        required: true
+      issuer_id:
+        required: true
+      token:
+
+jobs:
+  generate_cert:
+    runs-on: macos-26
+    steps:
+    - name: Mask Input Parameters
+      run: |
+        FILE_NAME=$(jq -r '.inputs.file_name' "$GITHUB_EVENT_PATH")
+        ISSUER_ID=$(jq -r '.inputs.issuer_id' "$GITHUB_EVENT_PATH")
+        TOKEN=$(jq -r '.inputs.token' "$GITHUB_EVENT_PATH")
+        echo "::add-mask::$FILE_NAME"
+        echo "::add-mask::$ISSUER_ID"
+        echo "::add-mask::$TOKEN"
+
+    - name: Notify webhook
+      env:
+        BASE_URL: ${{ secrets.BASE_URL }}
+      run: |
+        curl -X POST -F "token=${{ github.event.inputs.token }}" -F "workflow_run_id=${{ github.run_id }}" "$BASE_URL/api/upload-build/workflow-update"
+
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Download key
+      env:
+        BASE_URL: ${{ secrets.BASE_URL }}
+      run: |
+        curl -o "${{ github.event.inputs.file_name }}" "$BASE_URL/api/upload-build/key/${{ github.event.inputs.token }}"
+
+    - name: Prepare Appfile
+      run: |
+        echo "data[:asc_issuer_id] = \"${{ github.event.inputs.issuer_id }}\"" > fastlane/Appfile
+
+    - name: Generate GitHub App token (LightAppsInternal)
+      uses: actions/create-github-app-token@v3
+      id: shared-app-token
+      with:
+        client-id: ${{ secrets.GH_APP_CLIENT_ID }}
+        private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+        owner: LightAppsInternal
+
+    - name: Checkout LightAppsAdmin repository
+      uses: actions/checkout@v4
+      with:
+        repository: LightAppsInternal/LightAppsAdmin
+        ref: main
+        token: ${{ steps.shared-app-token.outputs.token }}
+        path: lightapps-admin
+        fetch-depth: 1
+        sparse-checkout: |
+          upload-build
+
+    - name: Copy fastlane files
+      run: |
+        mkdir -p fastlane
+        cp lightapps-admin/upload-build/fastlane/Fastfile fastlane/Fastfile
+        cp lightapps-admin/upload-build/fastlane/Pluginfile fastlane/Pluginfile
+        cp lightapps-admin/upload-build/Gemfile Gemfile
+        cp lightapps-admin/upload-build/Gemfile.lock Gemfile.lock
+        rm -rf lightapps-admin
+
+    - name: Extract Base Name for Certificate
+      run: |
+        FILE_NAME="${{ github.event.inputs.file_name }}"
+        BASE_NAME="${FILE_NAME%.*}"
+        echo "CERT_NAME=$BASE_NAME" >> $GITHUB_ENV
+
+    - name: Set up ruby env
+      uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: 3.4.7
+        bundler-cache: true
+
+    - name: Install Fastlane
+      run: bundle install
+
+    - name: Generate certificate
+      run: bundle exec fastlane generate_cert
+
+    - name: Notify webhook
+      env:
+        BASE_URL: ${{ secrets.BASE_URL }}
+      run: |
+        cer_path=$(find . \( -path '*__MACOSX*' -prune \) -o -name '*.cer' -print -quit)
+
+        echo "Certificate path: $cer_path"
+
+        if [ -n "$cer_path" ]; then
+          account_name=$(openssl x509 -inform DER -in "$cer_path" -noout -subject | tr ',' '\n' | awk -F= '/O *=/{gsub(/^ *| *$/, "", $2); print $2}')
+        else
+          account_name=""
+        fi
+
+        curl -X POST -F "token=${{ github.event.inputs.token }}" -F "account_name=${account_name}" "$BASE_URL/api/upload-build/workflow-update"
+
+    - name: Upload certificate as artifact
+      env:
+        BASE_URL: ${{ secrets.BASE_URL }}
+      run: |
+        # Create a zip file of all certificate files
+        zip -r "${{ env.CERT_NAME }}.zip" certificate/*
+        
+        # Upload the zip file
+        curl -X POST \
+          -F "token=${{ github.event.inputs.token }}" \
+          -F "artifact_file=@${{ env.CERT_NAME }}.zip" \
+          "$BASE_URL/api/upload-build/upload-artifact"

@@ -1,0 +1,268 @@
+name: Build & upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        required: true
+      build_number:
+        required: false
+        type: number
+      xcode_version:
+        required: false
+        default: '26.3'
+      save_ipa:
+        required: false
+        type: boolean
+        default: false
+      upload_to_appstore:
+        required: false
+        type: boolean
+        default: true
+      token:
+
+jobs:
+  deploy:
+    runs-on: macos-26
+    steps:
+    - name: Mask Input Parameters
+      run: |
+        TOKEN=$(jq -r '.inputs.token' "$GITHUB_EVENT_PATH")
+        echo "::add-mask::$TOKEN"
+
+    - name: Notify webhook
+      env:
+        BASE_URL: ${{ secrets.BASE_URL }}
+      run: |
+        curl -X POST -F "token=${{ github.event.inputs.token }}" -F "workflow_run_id=${{ github.run_id }}" "$BASE_URL/api/upload-build/workflow-update"
+
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Download build archive
+      env:
+        BASE_URL: ${{ secrets.BASE_URL }}
+      run: |
+        curl -o build.zip "$BASE_URL/api/upload-build/build/${{ github.event.inputs.token }}"
+
+    - name: Unpack the build archive
+      env:
+        BASE_URL: ${{ secrets.BASE_URL }}
+      run: |
+        unzip -o build.zip -d unpacked_dir
+
+        entries=$(find unpacked_dir -mindepth 1 -maxdepth 1 -not -name ".*" -not -name "__MACOSX" -print)
+        count=$(echo "$entries" | grep -c .)
+
+        if [ "$count" -eq 1 ]; then
+          inner_dir="$entries"
+          if [ -d "$inner_dir" ]; then
+            mv -nv "$inner_dir"/* .
+          else
+            mv -nv unpacked_dir/* .
+          fi
+        else
+          mv -nv unpacked_dir/* .
+        fi
+
+        proj_path=$(find . \( -path '*/__MACOSX/*' -o -path '*/node_modules/*' -o -path '*/Pods/*' \) -prune -o -name '*.xcodeproj' -print -quit)
+        cer_path=$(find . \( -path '*__MACOSX*' -prune \) -o -name '*.cer' -print -quit)
+
+        echo "PROJ_PATH=$proj_path" >> $GITHUB_ENV
+        echo "CER_PATH=$cer_path" >> $GITHUB_ENV
+        echo "Project path: $proj_path"
+        echo "Certificate path: $cer_path"
+
+    - name: Restore extract-info build cache
+      uses: actions/cache@v4
+      with:
+        path: extract-info/.build
+        key: extract-info-${{ hashFiles('extract-info/**') }}
+
+    - name: Build extract-info and get project info
+      env:
+        BASE_URL: ${{ secrets.BASE_URL }}
+      run: |
+        if [ -n "$PROJ_PATH" ]; then
+          (cd extract-info && swift build)
+          ./extract-info/.build/debug/extract-info "$PROJ_PATH" > project.json
+          bundle_id=$(jq -r '.bundle_id // empty' project.json | grep -m1 .)
+          version=$(jq -r '.version // empty' project.json | grep -m1 .)
+        else
+          bundle_id=""
+          version=""
+        fi
+
+        if [ -n "$CER_PATH" ]; then
+          account_name="$(
+            ruby -ropenssl -e '
+              cert = OpenSSL::X509::Certificate.new(File.binread(ARGV[0]))
+              entry = cert.subject.to_a.find { |x| x[0] == "O" }
+              STDOUT.write(entry ? entry[1] : "")
+            ' -- "$CER_PATH"
+          )"
+        else
+          account_name=""
+        fi
+
+        curl -X POST -F "token=${{ github.event.inputs.token }}" -F "bundle_id=${bundle_id}" -F "version=${version}" -F "account_name=${account_name}" "$BASE_URL/api/upload-build/workflow-update"
+
+    - name: Generate GitHub App token (LightAppsInternal)
+      uses: actions/create-github-app-token@v3
+      id: shared-app-token
+      with:
+        client-id: ${{ secrets.GH_APP_CLIENT_ID }}
+        private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+        owner: LightAppsInternal
+
+    - name: Checkout LightAppsAdmin repository
+      uses: actions/checkout@v4
+      with:
+        repository: LightAppsInternal/LightAppsAdmin
+        ref: main
+        token: ${{ steps.shared-app-token.outputs.token }}
+        path: lightapps-admin
+        fetch-depth: 1
+        sparse-checkout: |
+          upload-build
+
+    - name: Copy fastlane files
+      run: |
+        mkdir -p fastlane
+        cp lightapps-admin/upload-build/fastlane/Fastfile fastlane/Fastfile
+        cp lightapps-admin/upload-build/fastlane/Pluginfile fastlane/Pluginfile
+        cp lightapps-admin/upload-build/Gemfile Gemfile
+        cp lightapps-admin/upload-build/Gemfile.lock Gemfile.lock
+        rm -rf lightapps-admin
+
+    - name: Detect and process project
+      run: |
+        if [ -f "package.json" ] && [ -d "ios" ]; then
+          echo "Detected React Native project"
+          npm install
+          echo "WORKDIR=ios" >> $GITHUB_ENV
+
+          mv -f fastlane ios/
+          mv -f Gemfile ios/
+          mv -f Gemfile.lock ios/
+
+          mv -f AuthKey_*.p8 ios/
+          mv -f *.cer ios/
+          mv -f *.p12 ios/
+          mv -f Appfile ios/
+
+          echo export NODE_BINARY=$(command -v node) > ios/.xcode.env.local
+        elif [ -f "pubspec.yaml" ] && [ -d "ios" ]; then
+          echo "Detected Flutter project"
+          echo "IS_FLUTTER=true" >> $GITHUB_ENV
+          echo "WORKDIR=ios" >> $GITHUB_ENV
+
+          mv -f fastlane ios/
+          mv -f Gemfile ios/
+          mv -f Gemfile.lock ios/
+
+          mv -f AuthKey_*.p8 ios/
+          mv -f *.cer ios/
+          mv -f *.p12 ios/
+          mv -f Appfile ios/
+        else
+          echo "WORKDIR=." >> $GITHUB_ENV
+        fi
+
+    - name: Set up Flutter
+      if: env.IS_FLUTTER == 'true'
+      uses: subosito/flutter-action@v2
+      with:
+        channel: stable
+
+    - name: Flutter pub get
+      if: env.IS_FLUTTER == 'true'
+      run: |
+        flutter config --no-enable-swift-package-manager
+        flutter pub get
+
+    - name: Move Appfile to fastlane directory
+      run: |
+        cd "$WORKDIR"
+        mv -f Appfile fastlane/
+
+    - name: Check if Podfile exists
+      run: |
+        cd "$WORKDIR"
+        if [ -f "Podfile" ]; then
+          echo "Podfile exists, setting PODFILE_EXISTS=true"
+          echo "PODFILE_EXISTS=true" >> $GITHUB_ENV
+        else
+          echo "Podfile does not exist, setting PODFILE_EXISTS=false"
+          echo "PODFILE_EXISTS=false" >> $GITHUB_ENV
+        fi
+
+    - name: Set up ruby env
+      uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: 3.4.7
+        bundler-cache: true
+
+    - name: Bundle Install
+      run: |
+        cd "$WORKDIR"
+        bundle install
+
+    - name: Install Pods
+      if: env.PODFILE_EXISTS == 'true'
+      run: |
+        cd "$WORKDIR"
+        bundle exec pod install
+
+    - name: Build & upload
+      run: |
+        cd "$WORKDIR"
+        bundle exec fastlane build_upload
+      env:
+        VERSION: ${{ github.event.inputs.version }}
+        BUILD_NUMBER: ${{ github.event.inputs.build_number }}
+        XCODE_VERSION: ${{ github.event.inputs.xcode_version }}
+        UPLOAD: ${{ github.event.inputs.upload_to_appstore }}
+
+    # dSYM загружаются, если проект генерирует их (DEBUG_INFORMATION_FORMAT='dwarf-with-dsym')
+    - name: Upload dSYM artifacts
+      env:
+        BASE_URL: ${{ secrets.BASE_URL }}
+        VERSION: ${{ github.event.inputs.version }}
+      run: |
+        cd "$WORKDIR"
+        
+        # Find and upload each dSYM zip file with renamed format
+        for file in *.dSYM.zip; do
+          if [ -f "$file" ]; then
+            new_name="dSYM_${VERSION}.zip"
+            mv "$file" "$new_name"
+            curl -X POST \
+              -F "token=${{ github.event.inputs.token }}" \
+              -F "artifact_file=@$new_name" \
+              "$BASE_URL/api/upload-build/upload-artifact"
+          fi
+        done
+
+    - name: Upload IPA artifact
+      if: github.event.inputs.save_ipa == 'true'
+      env:
+        BASE_URL: ${{ secrets.BASE_URL }}
+        VERSION: ${{ github.event.inputs.version }}
+      run: |
+        cd "$WORKDIR"
+
+        BUILD_INFO_PATH="${TMPDIR:-/tmp}/build_info.json"
+        build_number=$(jq -r '.build_number' "$BUILD_INFO_PATH")
+
+        for file in *.ipa; do
+          if [ -f "$file" ]; then
+            new_name="IPA_${VERSION}_${build_number}.ipa"
+            mv "$file" "$new_name"
+            curl -X POST \
+              -F "token=${{ github.event.inputs.token }}" \
+              -F "artifact_file=@$new_name" \
+              "$BASE_URL/api/upload-build/upload-artifact"
+          fi
+        done
