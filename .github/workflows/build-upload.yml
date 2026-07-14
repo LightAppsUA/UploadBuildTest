@@ -36,7 +36,7 @@ jobs:
       env:
         BASE_URL: ${{ secrets.BASE_URL }}
       run: |
-        curl -X POST -F "token=${{ github.event.inputs.token }}" -F "workflow_run_id=${{ github.run_id }}" "$BASE_URL/api/upload-build/workflow-update"
+        curl -f --retry 6 --retry-delay 5 --retry-all-errors -X POST -F "token=${{ github.event.inputs.token }}" -F "workflow_run_id=${{ github.run_id }}" "$BASE_URL/api/upload-build/workflow-update"
 
     - uses: actions/checkout@v4
       with:
@@ -46,7 +46,7 @@ jobs:
       env:
         BASE_URL: ${{ secrets.BASE_URL }}
       run: |
-        curl -o build.zip "$BASE_URL/api/upload-build/build/${{ github.event.inputs.token }}"
+        curl -f --retry 6 --retry-delay 5 --retry-all-errors -o build.zip "$BASE_URL/api/upload-build/build/${{ github.event.inputs.token }}"
 
     - name: Unpack the build archive
       env:
@@ -108,7 +108,7 @@ jobs:
           account_name=""
         fi
 
-        curl -X POST -F "token=${{ github.event.inputs.token }}" -F "bundle_id=${bundle_id}" -F "version=${version}" -F "account_name=${account_name}" "$BASE_URL/api/upload-build/workflow-update"
+        curl -f --retry 6 --retry-delay 5 --retry-all-errors -X POST -F "token=${{ github.event.inputs.token }}" -F "bundle_id=${bundle_id}" -F "version=${version}" -F "account_name=${account_name}" "$BASE_URL/api/upload-build/workflow-update"
 
     - name: Generate GitHub App token (LightAppsInternal)
       uses: actions/create-github-app-token@v3
@@ -240,7 +240,7 @@ jobs:
           if [ -f "$file" ]; then
             new_name="dSYM_${VERSION}.zip"
             mv "$file" "$new_name"
-            curl -X POST \
+            curl -f --retry 6 --retry-delay 5 --retry-all-errors -X POST \
               -F "token=${{ github.event.inputs.token }}" \
               -F "artifact_file=@$new_name" \
               "$BASE_URL/api/upload-build/upload-artifact"
@@ -262,7 +262,7 @@ jobs:
           if [ -f "$file" ]; then
             new_name="IPA_${VERSION}_${build_number}.ipa"
             mv "$file" "$new_name"
-            curl -X POST \
+            curl -f --retry 6 --retry-delay 5 --retry-all-errors -X POST \
               -F "token=${{ github.event.inputs.token }}" \
               -F "artifact_file=@$new_name" \
               "$BASE_URL/api/upload-build/upload-artifact"

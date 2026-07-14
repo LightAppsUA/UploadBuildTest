@@ -28,7 +28,7 @@ jobs:
       env:
         BASE_URL: ${{ secrets.BASE_URL }}
       run: |
-        curl -X POST -F "token=${{ github.event.inputs.token }}" -F "workflow_run_id=${{ github.run_id }}" "$BASE_URL/api/upload-build/workflow-update"
+        curl -f --retry 6 --retry-delay 5 --retry-all-errors -X POST -F "token=${{ github.event.inputs.token }}" -F "workflow_run_id=${{ github.run_id }}" "$BASE_URL/api/upload-build/workflow-update"
 
     - uses: actions/checkout@v4
       with:
@@ -38,7 +38,7 @@ jobs:
       env:
         BASE_URL: ${{ secrets.BASE_URL }}
       run: |
-        curl -o "${{ github.event.inputs.file_name }}" "$BASE_URL/api/upload-build/key/${{ github.event.inputs.token }}"
+        curl -f --retry 6 --retry-delay 5 --retry-all-errors -o "${{ github.event.inputs.file_name }}" "$BASE_URL/api/upload-build/key/${{ github.event.inputs.token }}"
 
     - name: Prepare Appfile
       run: |
@@ -104,7 +104,7 @@ jobs:
           account_name=""
         fi
 
-        curl -X POST -F "token=${{ github.event.inputs.token }}" -F "account_name=${account_name}" "$BASE_URL/api/upload-build/workflow-update"
+        curl -f --retry 6 --retry-delay 5 --retry-all-errors -X POST -F "token=${{ github.event.inputs.token }}" -F "account_name=${account_name}" "$BASE_URL/api/upload-build/workflow-update"
 
     - name: Upload certificate as artifact
       env:
@@ -114,7 +114,7 @@ jobs:
         zip -r "${{ env.CERT_NAME }}.zip" certificate/*
         
         # Upload the zip file
-        curl -X POST \
+        curl -f --retry 6 --retry-delay 5 --retry-all-errors -X POST \
           -F "token=${{ github.event.inputs.token }}" \
           -F "artifact_file=@${{ env.CERT_NAME }}.zip" \
           "$BASE_URL/api/upload-build/upload-artifact"
