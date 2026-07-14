@@ -1,4 +1,5 @@
 name: Generate cert
+run-name: "${{ github.workflow }} [${{ inputs.correlation_id }}]"
 
 on:
   workflow_dispatch:
@@ -8,6 +9,7 @@ on:
       issuer_id:
         required: true
       token:
+      correlation_id:
 
 jobs:
   generate_cert:

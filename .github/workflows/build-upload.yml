@@ -1,4 +1,5 @@
 name: Build & upload
+run-name: "${{ github.workflow }} [${{ inputs.correlation_id }}]"
 
 on:
   workflow_dispatch:
@@ -20,6 +21,7 @@ on:
         type: boolean
         default: true
       token:
+      correlation_id:
 
 jobs:
   deploy:
